@@ -8,3 +8,10 @@ dist/
 .DS_Store
 INTEGRATION_ACTIVITY.md
 *.md
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.iml
+*.iws
+*.ipr
