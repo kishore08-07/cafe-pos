@@ -1,0 +1,20 @@
+Available routes in your application:
+/login — Staff login
+/signup — Account creation
+/admin/dashboard — Admin dashboard
+/admin/products
+/admin/categories
+/admin/payment
+/admin/coupons
+/admin/tables
+/admin/employees
+/admin/self-order
+/admin/reports
+/pos — POS ordering
+/pos/payment
+/pos/history
+/pos/customers
+/pos/tables
+/kds — Kitchen display
+/customer-display
+/s/:token — Customer self-order portal

@@ -1,0 +1,319 @@
+openapi: 3.1.0
+info:
+  title: Cafe POS API
+  version: 1.0.0
+  description: REST contract used by the Cafe POS React frontend.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+tags:
+  - name: Authentication
+  - name: Catalog
+  - name: POS
+  - name: Kitchen
+  - name: Self order
+  - name: Reports
+paths:
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthEnvelope'}
+  /api/auth/refresh:
+    post:
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: {type: string}
+      responses:
+        '200': {description: Token pair refreshed}
+  /api/products:
+    get:
+      tags: [Catalog]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {description: Product page}
+    post:
+      tags: [Catalog]
+      responses:
+        '200': {description: Product created}
+  /api/categories:
+    get:
+      tags: [Catalog]
+      responses:
+        '200': {description: Categories}
+    post:
+      tags: [Catalog]
+      responses:
+        '200': {description: Category created}
+  /api/floors:
+    get:
+      tags: [Catalog]
+      responses:
+        '200': {description: Floors and tables}
+  /api/payment-methods:
+    get:
+      tags: [Catalog]
+      responses:
+        '200': {description: Payment methods}
+  /api/sessions/active:
+    get:
+      tags: [POS]
+      responses:
+        '200': {description: Current employee session}
+  /api/sessions/open:
+    post:
+      tags: [POS]
+      responses:
+        '200': {description: Session opened}
+  /api/orders:
+    get:
+      tags: [POS]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {description: Order page}
+    post:
+      tags: [POS]
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema: {type: integer, format: int64}
+        - name: tableId
+          in: query
+          schema: {type: integer, format: int64}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OrderRequest'}
+      responses:
+        '200':
+          description: Draft order created or updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderEnvelope'}
+  /api/orders/{id}/send-kitchen:
+    post:
+      tags: [POS]
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {description: Order sent to kitchen}
+  /api/orders/{id}/payment:
+    post:
+      tags: [POS]
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PaymentRequest'}
+      responses:
+        '200':
+          description: Payment recorded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderEnvelope'}
+  /api/kds/tickets:
+    get:
+      tags: [Kitchen]
+      responses:
+        '200': {description: Kitchen tickets}
+  /api/kds/tickets/{orderId}/advance:
+    put:
+      tags: [Kitchen]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: {type: integer, format: int64}
+      responses:
+        '200': {description: Kitchen ticket advanced}
+  /api/customer-display/stream:
+    get:
+      tags: [POS]
+      security: []
+      responses:
+        '200':
+          description: Customer display server-sent event stream
+          content:
+            text/event-stream: {}
+  /api/self-order/menu/{token}:
+    get:
+      tags: [Self order]
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/Token'}
+      responses:
+        '200': {description: Public table menu}
+  /api/self-order/order/{token}:
+    post:
+      tags: [Self order]
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/Token'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SelfOrderRequest'}
+      responses:
+        '200': {description: Self order placed}
+  /api/self-order/order/{orderId}/status:
+    get:
+      tags: [Self order]
+      security: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: {type: integer, format: int64}
+      responses:
+        '200': {description: Order and kitchen status}
+  /api/reports/export/pdf:
+    get:
+      tags: [Reports]
+      responses:
+        '200':
+          description: PDF report
+          content:
+            application/pdf: {}
+  /api/reports/export/xls:
+    get:
+      tags: [Reports]
+      responses:
+        '200':
+          description: XLSX report
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+    Token:
+      name: token
+      in: path
+      required: true
+      schema: {type: string}
+    Page:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 0, default: 0}
+    Size:
+      name: size
+      in: query
+      schema: {type: integer, minimum: 1, default: 20}
+  schemas:
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, format: password}
+    AuthResponse:
+      type: object
+      properties:
+        userId: {type: integer, format: int64}
+        name: {type: string}
+        email: {type: string, format: email}
+        role: {type: string, enum: [ADMIN, EMPLOYEE]}
+        accessToken: {type: string}
+        refreshToken: {type: string}
+    AuthEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/Envelope'}
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/AuthResponse'}
+    OrderLineRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId: {type: integer, format: int64}
+        quantity: {type: number, minimum: 0.001}
+    OrderRequest:
+      type: object
+      required: [lines]
+      properties:
+        orderId: {type: [integer, 'null'], format: int64}
+        customerId: {type: [integer, 'null'], format: int64}
+        lines:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/OrderLineRequest'}
+    SelfOrderRequest:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/OrderLineRequest'}
+    PaymentRequest:
+      type: object
+      required: [paymentMethodId, amount]
+      properties:
+        paymentMethodId: {type: integer, format: int64}
+        amount: {type: number, minimum: 0.01}
+        referenceNumber: {type: [string, 'null']}
+    Order:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        orderNumber: {type: string}
+        status: {type: string, enum: [DRAFT, PAID, CANCELLED]}
+        sentToKitchen: {type: boolean}
+        subtotal: {type: number}
+        taxTotal: {type: number}
+        discountTotal: {type: number}
+        totalAmount: {type: number}
+    OrderEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/Envelope'}
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Order'}
+    Envelope:
+      type: object
+      required: [success, timestamp]
+      properties:
+        success: {type: boolean}
+        data: {}
+        error:
+          type: [object, 'null']
+          properties:
+            code: {type: string}
+            message: {type: string}
+        timestamp: {type: string, format: date-time}
