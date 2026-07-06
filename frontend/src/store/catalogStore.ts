@@ -161,6 +161,7 @@ const orderFromDto = (
     name: line.productName,
     qty: Number(line.quantity),
     price: Number(line.unitPrice),
+    taxRate: Number(line.taxRate ?? 0),
     discount: Number(line.discountAmount),
   })),
   createdAt: value.createdAt,

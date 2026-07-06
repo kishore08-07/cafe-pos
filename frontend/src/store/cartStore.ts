@@ -5,9 +5,10 @@ export interface CartItem {
   name: string;
   price: number;
   qty: number;
+  taxRate?: number;
   categoryColor?: string;
   notes?: string;
-  discount?: number; // product-level discount amount
+  discount?: number;
   discountType?: 'percent' | 'flat';
   discountValue?: number;
 }
@@ -76,7 +77,10 @@ export const useCartStore = create<CartState>((set) => ({
     set((s) => ({
       items: s.items.map((i) => {
         if (i.id !== id) return i;
-        const disc = type === 'percent' ? Math.round((i.price * i.qty * value) / 100) : Math.min(value, i.price * i.qty);
+        const disc =
+          type === 'percent'
+            ? Math.round((i.price * i.qty * value) / 100)
+            : Math.min(value, i.price * i.qty);
         return { ...i, discount: disc, discountType: type, discountValue: value };
       }),
     })),
@@ -102,11 +106,17 @@ export function cartItemDiscounts(items: CartItem[]): number {
   return items.reduce((sum, i) => sum + (i.discount ?? 0), 0);
 }
 
+function lineTax(line: CartItem): number {
+  const lineTotal = line.price * line.qty;
+  const taxable = Math.max(0, lineTotal - (line.discount ?? 0));
+  return Math.round((taxable * (line.taxRate ?? 0)) / 100);
+}
+
 export function cartTotals(items: CartItem[], coupon: CartState['coupon']) {
   const subtotal = cartSubtotal(items);
   const itemDiscounts = cartItemDiscounts(items);
-  const afterItemDisc = subtotal - itemDiscounts;
-  const gst = Math.round(afterItemDisc * 0.05);
+  const afterItemDisc = Math.max(0, subtotal - itemDiscounts);
+  const grossTax = items.reduce((sum, item) => sum + lineTax(item), 0);
   let orderDiscount = 0;
   if (coupon) {
     orderDiscount =
@@ -114,6 +124,8 @@ export function cartTotals(items: CartItem[], coupon: CartState['coupon']) {
         ? Math.round((afterItemDisc * coupon.value) / 100)
         : Math.min(coupon.value, afterItemDisc);
   }
-  const total = afterItemDisc + gst - orderDiscount;
+  const netSubtotal = Math.max(0, afterItemDisc - orderDiscount);
+  const gst = afterItemDisc > 0 ? Math.round((grossTax * netSubtotal) / afterItemDisc) : 0;
+  const total = netSubtotal + gst;
   return { subtotal, itemDiscounts, gst, orderDiscount, total };
 }

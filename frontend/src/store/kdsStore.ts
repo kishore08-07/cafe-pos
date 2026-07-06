@@ -26,6 +26,7 @@ interface KDSState {
   tickets: KDSTicket[];
   loading: boolean;
   hydrate: () => Promise<void>;
+  upsertTicket: (ticket: KdsTicketDto) => void;
   advanceStage: (id: string) => Promise<void>;
   markItemDone: (ticketId: string, itemId: string) => Promise<void>;
   reset: () => void;
@@ -61,24 +62,26 @@ export const useKDSStore = create<KDSState>((set, get) => ({
       throw error;
     }
   },
+  upsertTicket: (ticket) => {
+    const next = fromDto(ticket);
+    set((state) => ({
+      tickets: state.tickets.some((item) => item.id === next.id)
+        ? state.tickets.map((item) => (item.id === next.id ? next : item))
+        : [...state.tickets, next].sort((a, b) => a.createdAt - b.createdAt),
+    }));
+  },
   advanceStage: async (id) => {
     const ticket = await api<KdsTicketDto>(`/api/kds/tickets/${id}/advance`, {
       method: 'PUT',
     });
-    set((state) => ({
-      tickets: state.tickets.map((item) => (item.id === id ? fromDto(ticket) : item)),
-    }));
+    get().upsertTicket(ticket);
   },
   markItemDone: async (ticketId, itemId) => {
     const ticket = await api<KdsTicketDto>(
       `/api/kds/tickets/${ticketId}/items/${itemId}/done`,
       { method: 'PUT' }
     );
-    set((state) => ({
-      tickets: state.tickets.map((item) =>
-        item.id === ticketId ? fromDto(ticket) : item
-      ),
-    }));
+    get().upsertTicket(ticket);
   },
   reset: () => set({ tickets: [] }),
   getTicketByOrder: (orderNum) => get().tickets.find((t) => t.orderNum === orderNum),
