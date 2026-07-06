@@ -61,6 +61,7 @@ export function TablesView() {
         name: i.name,
         price: i.price,
         qty: i.qty,
+        taxRate: i.taxRate ?? 0,
       }));
       loadOrder(
         cartItems,

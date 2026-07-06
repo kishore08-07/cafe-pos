@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Minus, Plus, Trash2, X, ShoppingCart, Send, UserPlus, Tag, Percent } from 'lucide-react';
+import { Mail, Minus, Plus, ShoppingCart, Send, Tag, Trash2, UserPlus, Percent } from 'lucide-react';
 import { SectionLabel, Button, Badge, Input, Select } from '../../components/ui';
 import { FloorPopup } from './FloorPopup';
 import { useCatalogStore, categoryColor } from '../../store/catalogStore';
@@ -9,18 +9,35 @@ import { toast } from '../../components/ui/Toast';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { api } from '../../api/client';
 import type { OrderDto } from '../../api/contracts';
+import { ReceiptEmailModal } from './ReceiptEmailModal';
 import { useSessionStore } from '../../store/sessionStore';
 
 export function OrderView() {
   const navigate = useNavigate();
-  const { products, categories, coupons } = useCatalogStore();
-  const { orderId, items, tableId, tableLabel, customer, coupon, addItem, updateQty, removeItem, setTable, setOrder, applyCoupon, applyItemDiscount, clearCart } = useCartStore();
+  const { products, categories, coupons, customers } = useCatalogStore();
+  const {
+    orderId,
+    items,
+    tableId,
+    tableLabel,
+    customer,
+    coupon,
+    addItem,
+    updateQty,
+    removeItem,
+    setTable,
+    setOrder,
+    applyCoupon,
+    applyItemDiscount,
+    clearCart,
+  } = useCartStore();
   const refreshOrders = useCatalogStore((s) => s.refreshOrders);
   const sessionId = useSessionStore((s) => s.sessionId);
 
   const isMobile = useMediaQuery('(max-width: 899px)');
   const [floorOpen, setFloorOpen] = useState(!tableId);
   const [activeCat, setActiveCat] = useState('all');
+  const [search, setSearch] = useState('');
   const [cartOpen, setCartOpen] = useState(false);
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponCode, setCouponCode] = useState('');
@@ -28,12 +45,16 @@ export function OrderView() {
   const [discItemId, setDiscItemId] = useState('');
   const [discType, setDiscType] = useState<'percent' | 'flat'>('percent');
   const [discValue, setDiscValue] = useState('');
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailOrderId, setEmailOrderId] = useState<string | null>(null);
+  const [emailOrderNum, setEmailOrderNum] = useState('');
+  const [emailTotal, setEmailTotal] = useState(0);
+  const [preparingReceipt, setPreparingReceipt] = useState(false);
 
   useEffect(() => {
     if (!tableId) setFloorOpen(true);
   }, [tableId]);
 
-  // Auto-surface automated promotions
   useEffect(() => {
     const autoPromos = coupons.filter((c) => c.active && c.promoType !== 'manual');
     const subtotal = items.reduce((s, i) => s + i.price * i.qty, 0);
@@ -55,8 +76,14 @@ export function OrderView() {
   }, [items, coupons, coupon, applyCoupon]);
 
   const filtered = useMemo(
-    () => products.filter((p) => p.available && (activeCat === 'all' || p.categoryId === activeCat)),
-    [products, activeCat]
+    () =>
+      products.filter(
+        (p) =>
+          p.available &&
+          (activeCat === 'all' || p.categoryId === activeCat) &&
+          p.name.toLowerCase().includes(search.trim().toLowerCase())
+      ),
+    [products, activeCat, search]
   );
   const availableCoupons = useMemo(
     () => coupons.filter((item) => item.active && item.promoType === 'manual'),
@@ -124,6 +151,25 @@ export function OrderView() {
     }
   };
 
+  const openReceiptEmail = async () => {
+    if (items.length === 0) {
+      toast.error('Cart is empty.');
+      return;
+    }
+    setPreparingReceipt(true);
+    try {
+      const draft = await saveDraft();
+      setEmailOrderId(String(draft.id));
+      setEmailOrderNum(draft.orderNumber);
+      setEmailTotal(Number(draft.totalAmount));
+      setEmailOpen(true);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Unable to prepare the receipt.');
+    } finally {
+      setPreparingReceipt(false);
+    }
+  };
+
   const applyDiscount = () => {
     if (!discItemId || !discValue) return;
     applyItemDiscount(discItemId, discType, Number(discValue));
@@ -150,7 +196,9 @@ export function OrderView() {
               <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-x-2 gap-y-3">
                 <div className="min-w-0">
                   <div className="text-[17px] font-light leading-snug text-text break-words">{i.name}</div>
-                  <div className="mt-1 text-[15px] font-extralight text-text-faint">₹{i.price} each</div>
+                  <div className="mt-1 text-[15px] font-extralight text-text-faint">
+                    ₹{i.price} each · GST {i.taxRate ?? 0}%
+                  </div>
                 </div>
                 <div className="min-w-[4rem] pt-0.5 text-right font-display text-[18px] text-text">
                   ₹{i.price * i.qty}
@@ -162,7 +210,6 @@ export function OrderView() {
                   <button onClick={() => updateQty(i.id, i.qty + 1)} className="w-9 h-9 flex items-center justify-center border border-border text-text-muted hover:border-gold hover:text-gold transition-colors" aria-label="Increase"><Plus size={13} /></button>
                 </div>
               </div>
-              {/* Product-level discount display */}
               {i.discount && i.discount > 0 && (
                 <div className="mt-1 text-[14px] font-light text-cancel pl-1">
                   Discount: −₹{i.discount} ({i.discountType === 'percent' ? `${i.discountValue}%` : `₹${i.discountValue}`})
@@ -179,7 +226,7 @@ export function OrderView() {
             {totals.itemDiscounts > 0 && (
               <div className="flex justify-between"><span className="text-[14px] tracking-[0.12em] uppercase font-extralight text-text-muted">Item discounts</span><span className="font-display text-[17px] text-cancel">−₹{totals.itemDiscounts}</span></div>
             )}
-            <div className="flex justify-between"><span className="text-[14px] tracking-[0.12em] uppercase font-extralight text-text-muted">GST 5%</span><span className="font-display text-[17px] text-text-muted">₹{totals.gst}</span></div>
+            <div className="flex justify-between"><span className="text-[14px] tracking-[0.12em] uppercase font-extralight text-text-muted">GST</span><span className="font-display text-[17px] text-text-muted">₹{totals.gst}</span></div>
             {totals.orderDiscount > 0 && (
               <div className="flex justify-between"><span className="text-[14px] tracking-[0.12em] uppercase font-extralight text-text-muted">Discount ({coupon?.code})</span><span className="font-display text-[17px] text-cancel">−₹{totals.orderDiscount}</span></div>
             )}
@@ -198,9 +245,7 @@ export function OrderView() {
                 const opening = !couponOpen;
                 setCouponOpen(opening);
                 if (opening) {
-                  const appliedCouponAvailable = availableCoupons.some(
-                    (item) => item.code === coupon?.code
-                  );
+                  const appliedCouponAvailable = availableCoupons.some((item) => item.code === coupon?.code);
                   setCouponCode(appliedCouponAvailable ? coupon?.code ?? '' : '');
                 }
               }}
@@ -208,7 +253,6 @@ export function OrderView() {
               <Tag size={13} /> {coupon ? coupon.code : 'Coupon'}
             </Button>
           </div>
-          {/* Discount popup */}
           {discountOpen && (
             <div className="mt-3 p-3 border border-border space-y-3">
               <div className="text-[14px] tracking-[0.18em] uppercase font-extralight text-text-muted">Product-level discount</div>
@@ -229,11 +273,7 @@ export function OrderView() {
           {couponOpen && (
             availableCoupons.length > 0 ? (
               <div className="mt-3 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
-                <Select
-                  label="Available coupons"
-                  value={couponCode}
-                  onChange={(event) => setCouponCode(event.target.value)}
-                >
+                <Select label="Available coupons" value={couponCode} onChange={(event) => setCouponCode(event.target.value)}>
                   <option value="">Select a coupon</option>
                   {availableCoupons.map((item) => (
                     <option key={item.id} value={item.code}>
@@ -248,7 +288,8 @@ export function OrderView() {
               <p className="mt-3 text-[15px] font-light text-text-faint">No coupons are currently available.</p>
             )
           )}
-          <Button fullWidth size="lg" className="mt-4" variant="ghost" onClick={sendToKitchen}><Send size={14} /> Send to kitchen</Button>
+          <Button fullWidth size="lg" className="mt-4" variant="ghost" onClick={() => void openReceiptEmail()} disabled={preparingReceipt}><Mail size={14} /> {preparingReceipt ? 'Preparing receipt...' : 'Send receipt'}</Button>
+          <Button fullWidth size="lg" className="mt-2" variant="ghost" onClick={sendToKitchen}><Send size={14} /> Send to kitchen</Button>
           <Button fullWidth size="lg" className="mt-2" onClick={() => navigate('/pos/payment')}>Charge ₹{totals.total}</Button>
         </div>
       )}
@@ -266,84 +307,89 @@ export function OrderView() {
       <FloorPopup open={floorOpen} onClose={() => setFloorOpen(false)} />
 
       <div className="flex min-w-0 flex-1 flex-col p-4 sm:p-6 overflow-hidden">
-        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-          <div className="flex gap-1 overflow-x-auto no-scrollbar">
-            <button onClick={() => setActiveCat('all')} className={`px-3.5 py-2 text-[15px] font-semibold whitespace-nowrap min-h-[40px] border bg-transparent ${activeCat === 'all' ? 'text-text border-text' : 'text-text-muted border-border'}`}>All</button>
-            {categories.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setActiveCat(c.id)}
-                className="px-3.5 py-2 text-[15px] font-semibold whitespace-nowrap min-h-[40px] border bg-transparent flex items-center gap-2"
-                style={{
-                  color: activeCat === c.id ? 'var(--text)' : 'var(--text-muted)',
-                  borderColor: c.color,
-                  borderWidth: activeCat === c.id ? 2 : 1,
-                }}
-              >
-                <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
-                {c.name}
-              </button>
-            ))}
+        <div className="flex flex-col gap-3 mb-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex gap-1 overflow-x-auto no-scrollbar">
+              <button onClick={() => setActiveCat('all')} className={`px-3.5 py-2 text-[15px] font-semibold whitespace-nowrap min-h-[40px] border bg-transparent ${activeCat === 'all' ? 'text-text border-text' : 'text-text-muted border-border'}`}>All</button>
+              {categories.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setActiveCat(c.id)}
+                  className="px-3.5 py-2 text-[15px] font-semibold whitespace-nowrap min-h-[40px] border bg-transparent flex items-center gap-2"
+                  style={{
+                    color: activeCat === c.id ? 'var(--text)' : 'var(--text-muted)',
+                    borderColor: c.color,
+                    borderWidth: activeCat === c.id ? 2 : 1,
+                  }}
+                >
+                  <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
+                  {c.name}
+                </button>
+              ))}
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => { setTable('', ''); clearCart(); setFloorOpen(true); }} disabled={!tableId}>
+              <ShoppingCart size={13} /> {tableLabel ? `Table ${tableLabel}` : 'Select table'}
+            </Button>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => { setTable('', ''); clearCart(); setFloorOpen(true); }} disabled={!tableId}>
-            <ShoppingCart size={13} /> {tableLabel ? `Table ${tableLabel}` : 'Select table'}
-          </Button>
+          <div className="max-w-md">
+            <Input
+              label="Search products"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name"
+            />
+          </div>
         </div>
         <SectionLabel>{filtered.length} products</SectionLabel>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 overflow-y-auto pb-24 lg:pb-4">
           {filtered.map((p) => (
             <button
               key={p.id}
-              onClick={() => addItem({ id: p.id, name: p.name, price: p.price, categoryColor: categoryColor(categories, p.categoryId) })}
+              onClick={() => addItem({ id: p.id, name: p.name, price: p.price, taxRate: p.taxRate, categoryColor: categoryColor(categories, p.categoryId) })}
               className="border border-border p-3.5 text-left transition-colors hover:border-[rgba(0,117,74,0.35)]"
               style={{ background: 'var(--surface-raised)' }}
             >
               <div className="flex items-center justify-between mb-2">
                 <span className="block w-5 h-0.5 opacity-60" style={{ background: categoryColor(categories, p.categoryId) }} />
-                {/* Availability dot indicator */}
                 <span className={`w-2.5 h-2.5 rounded-full ${p.available ? 'bg-paid' : 'bg-cancel'}`} title={p.available ? 'In stock' : 'Out of stock'} />
               </div>
               <span className="block text-[16px] font-light text-text leading-snug mb-1.5">{p.name}</span>
+              <span className="block text-[13px] uppercase tracking-[0.14em] text-text-faint mb-1">GST {p.taxRate}%</span>
               <span className="block font-display text-[19px] text-text">₹{p.price}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Desktop cart */}
       {!isMobile && (
         <div className="min-w-0 w-[380px] shrink-0 p-4 sm:p-6 pl-0">
           <CartPanel className="h-full" />
         </div>
       )}
 
-      {/* Mobile sticky bar */}
-      {isMobile && items.length > 0 && (
-        <button
-          onClick={() => setCartOpen(true)}
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between px-5 py-4 border-t border-[rgba(0,117,74,0.3)] text-[#1E3932]"
-          style={{ background: '#00754A' }}
-        >
-          <span className="flex items-center gap-2 text-[16px] tracking-[0.18em] uppercase font-medium"><ShoppingCart size={16} /> View cart · {items.length}</span>
-          <span className="font-display text-[18px]">₹{totals.total}</span>
+      {isMobile && items.length > 0 && !cartOpen && (
+        <button onClick={() => setCartOpen(true)} className="fixed bottom-4 left-4 right-4 z-40 flex items-center justify-between bg-gold px-5 py-4 text-white shadow-lg">
+          <span>View order · {items.reduce((sum, item) => sum + item.qty, 0)} items</span>
+          <span>₹{totals.total}</span>
         </button>
       )}
 
-      {/* Mobile cart overlay */}
       {isMobile && cartOpen && (
-        <div className="fixed inset-0 z-[110]">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setCartOpen(false)} />
-          <div className="absolute bottom-0 left-0 right-0 max-h-[90vh] flex flex-col border-t border-border" style={{ background: 'var(--surface)' }}>
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <span className="font-display font-light italic text-[22px] text-text">Cart</span>
-              <button onClick={() => setCartOpen(false)} className="text-text-faint hover:text-gold p-2 min-h-[40px] min-w-[40px] flex items-center justify-center" aria-label="Close"><X size={18} /></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-5 flex flex-col">
-              <CartContents />
-            </div>
+        <div className="fixed inset-0 z-50 bg-bg p-4">
+          <div className="h-full">
+            <CartPanel />
           </div>
+          <Button fullWidth className="mt-3" variant="ghost" onClick={() => setCartOpen(false)}>Close order</Button>
         </div>
       )}
+      <ReceiptEmailModal
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        orderId={emailOrderId}
+        orderNum={emailOrderNum}
+        total={emailTotal}
+        initialEmail={customer ? customers.find((item) => item.id === customer.id)?.email ?? '' : ''}
+      />
     </div>
   );
 }

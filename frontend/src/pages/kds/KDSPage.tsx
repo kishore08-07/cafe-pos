@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Filter, Play, X } from 'lucide-react';
+import { Check, Filter, Play, Search, X } from 'lucide-react';
 import { useKDSStore, type KDSStage } from '../../store/kdsStore';
 import { useCatalogStore } from '../../store/catalogStore';
 import { toast } from '../../components/ui/Toast';
+import { subscribeToTopic } from '../../api/stomp';
+import type { KdsTicketDto } from '../../api/contracts';
 
 const stages: { id: KDSStage | 'all'; label: string; color: string }[] = [
   { id: 'all', label: 'All', color: '#AAA69E' },
@@ -12,10 +14,11 @@ const stages: { id: KDSStage | 'all'; label: string; color: string }[] = [
 ];
 
 export function KDSPage() {
-  const { tickets, advanceStage, markItemDone, hydrate } = useKDSStore();
+  const { tickets, advanceStage, markItemDone, hydrate, upsertTicket } = useKDSStore();
   const { products, categories } = useCatalogStore();
   const [activeTab, setActiveTab] = useState<KDSStage | 'all'>('all');
   const [filterOpen, setFilterOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const [filterProducts, setFilterProducts] = useState<Set<string>>(new Set());
   const [filterCategories, setFilterCategories] = useState<Set<string>>(new Set());
   const [updatingTickets, setUpdatingTickets] = useState<Set<string>>(new Set());
@@ -24,13 +27,28 @@ export function KDSPage() {
     void hydrate().catch((cause) =>
       toast.error(cause instanceof Error ? cause.message : 'Unable to load kitchen tickets.')
     );
-    const timer = window.setInterval(() => void hydrate().catch(() => undefined), 5000);
-    return () => window.clearInterval(timer);
-  }, [hydrate]);
+
+    return subscribeToTopic({
+      destination: '/topic/kds',
+      onMessage: (body) => {
+        try {
+          upsertTicket(JSON.parse(body) as KdsTicketDto);
+        } catch {
+          // Ignore malformed frames and keep the board usable.
+        }
+      },
+    });
+  }, [hydrate, upsertTicket]);
 
   const filtered = useMemo(() => {
     return tickets.filter((t) => {
       if (activeTab !== 'all' && t.stage !== activeTab) return false;
+      if (search.trim()) {
+        const query = search.trim().toLowerCase();
+        const matchesOrder = t.orderNum.toLowerCase().includes(query);
+        const matchesItem = t.items.some((i) => i.name.toLowerCase().includes(query));
+        if (!matchesOrder && !matchesItem) return false;
+      }
       if (filterProducts.size > 0 && !t.items.some((i) => filterProducts.has(i.name))) return false;
       if (filterCategories.size > 0) {
         const hasMatch = t.items.some((i) => {
@@ -41,7 +59,7 @@ export function KDSPage() {
       }
       return true;
     });
-  }, [tickets, activeTab, filterProducts, filterCategories, products]);
+  }, [tickets, activeTab, search, filterProducts, filterCategories, products]);
 
   const toggleFilter = (set: Set<string>, item: string): Set<string> => {
     const next = new Set(set);
@@ -165,7 +183,6 @@ export function KDSPage() {
 
   return (
     <div className="min-h-screen flex" style={{ background: '#1E3932', color: '#FFFFFF' }}>
-      {/* Filter sidebar */}
       {filterOpen && (
         <aside className="w-64 shrink-0 border-r p-5 overflow-y-auto" style={{ borderColor: 'rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.15)' }}>
           <div className="flex items-center justify-between mb-4">
@@ -212,7 +229,6 @@ export function KDSPage() {
         </aside>
       )}
 
-      {/* Main content */}
       <div className="flex-1 p-5 sm:p-8">
         <header className="flex items-center justify-between mb-6 pb-6 border-b" style={{ borderColor: 'rgba(255,255,255,0.12)' }}>
           <div className="font-body font-semibold text-[32px] sm:text-[38px] text-white">
@@ -241,35 +257,41 @@ export function KDSPage() {
           </div>
         </header>
 
-        {/* Status tabs */}
-        <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar">
-          {stages.map((s) => {
-            const count = s.id === 'all' ? filtered.length : filtered.filter((t) => t.stage === s.id).length;
-            return (
-              <button
-                key={s.id}
-                onClick={() => setActiveTab(s.id)}
-                className="px-4 py-2 text-[14px] tracking-[0.16em] uppercase font-normal whitespace-nowrap transition-colors"
-                style={{
-                  color: activeTab === s.id ? s.color : '#AAA69E',
-                  borderBottom: activeTab === s.id ? `2px solid ${s.color}` : '2px solid transparent',
-                }}
-              >
-                {s.label} ({count})
-              </button>
-            );
-          })}
+        <div className="mb-6 max-w-md">
+          <label className="block mb-2 text-[14px] tracking-[0.18em] uppercase text-[#AAA69E]">Search</label>
+          <div className="flex items-center gap-3 border px-4 py-3" style={{ borderColor: 'rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.12)' }}>
+            <Search size={16} className="text-[#AAA69E]" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Order number or product"
+              className="w-full bg-transparent text-[17px] text-white outline-none placeholder:text-[#6B7280]"
+            />
+          </div>
         </div>
 
-        {activeTab === 'all' ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {(['to_cook', 'preparing', 'completed'] as KDSStage[]).map(renderColumn)}
-          </div>
-        ) : (
-          <div className="max-w-2xl">
-            {renderColumn(activeTab)}
-          </div>
-        )}
+        <div className="mb-6 flex gap-2 overflow-x-auto no-scrollbar">
+          {stages.map((stage) => (
+            <button
+              key={stage.id}
+              onClick={() => setActiveTab(stage.id)}
+              className="px-4 py-2 border text-[14px] tracking-[0.16em] uppercase whitespace-nowrap"
+              style={{
+                borderColor: activeTab === stage.id ? stage.color : 'rgba(255,255,255,0.12)',
+                color: activeTab === stage.id ? stage.color : '#AAA69E',
+                background: activeTab === stage.id ? 'rgba(255,255,255,0.04)' : 'transparent',
+              }}
+            >
+              {stage.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-3">
+          {renderColumn('to_cook')}
+          {renderColumn('preparing')}
+          {renderColumn('completed')}
+        </div>
       </div>
     </div>
   );

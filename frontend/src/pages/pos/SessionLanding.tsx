@@ -1,27 +1,43 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MoreVertical, Settings, Monitor } from 'lucide-react';
-import { useState } from 'react';
+import { MoreVertical, Monitor, Settings } from 'lucide-react';
 import { useSessionStore } from '../../store/sessionStore';
-import { useCatalogStore } from '../../store/catalogStore';
 import { useAuthStore } from '../../store/authStore';
 import { Button } from '../../components/ui';
 import { toast } from '../../components/ui/Toast';
+import { api } from '../../api/client';
+import type { SessionDto } from '../../api/contracts';
 
 export function SessionLanding() {
   const navigate = useNavigate();
   const { isOpen, openedAt, openSession } = useSessionStore();
-  const { orders } = useCatalogStore();
   const { user } = useAuthStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionDto[]>([]);
 
-  const lastPaid = orders.find((o) => o.status === 'paid');
-  const lastOpenDate = openedAt ? new Date(openedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'No session yet';
-  const lastSell = lastPaid ? `₹${lastPaid.total.toLocaleString('en-IN')}` : '₹0';
+  useEffect(() => {
+    void api<SessionDto[]>('/api/sessions').then(setSessions).catch(() => undefined);
+  }, []);
+
+  const lastClosed = useMemo(
+    () =>
+      [...sessions]
+        .filter((session) => session.status === 'CLOSED' && session.closedAt)
+        .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime())[0],
+    [sessions]
+  );
+
+  const lastOpenDate = openedAt
+    ? new Date(openedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'No session yet';
+  const lastSell = lastClosed?.closingAmount != null ? `₹${Number(lastClosed.closingAmount).toLocaleString('en-IN')}` : '₹0';
 
   const handleOpen = async () => {
     try {
-      if (!isOpen) await openSession();
-      toast.success('Session opened.');
+      if (!isOpen) {
+        await openSession();
+        toast.success('Session opened.');
+      }
       navigate('/pos');
     } catch {
       toast.error('Unable to open the POS session.');
@@ -86,14 +102,18 @@ export function SessionLanding() {
             </div>
             <div className="p-4" style={{ background: 'var(--surface)' }}>
               <div className="text-[13px] tracking-[0.2em] uppercase font-extralight text-text-faint mb-1">
-                Last Sell amount
+                Last closing amount
               </div>
               <div className="font-display text-[20px] text-gold">{lastSell}</div>
             </div>
           </div>
 
+          <p className="mb-4 text-[15px] font-light text-text-muted">
+            {isOpen ? 'A session is already open. You can jump back into POS or close it from the POS header.' : 'Open a new POS session to start taking orders.'}
+          </p>
+
           <Button fullWidth size="lg" onClick={handleOpen}>
-            Open Session
+            {isOpen ? 'Resume Session' : 'Open Session'}
           </Button>
         </div>
       </main>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pencil, Trash2 } from 'lucide-react';
 import { PageHeader } from '../../components/shared/PageHeader';
@@ -7,46 +7,91 @@ import { EmptyState } from '../../components/shared/EmptyState';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { useCatalogStore } from '../../store/catalogStore';
 import { useCartStore } from '../../store/cartStore';
+import { useSessionStore } from '../../store/sessionStore';
 import { useDebounce } from '../../hooks/useDebounce';
 import { toast } from '../../components/ui/Toast';
+import { api, type PageResponse } from '../../api/client';
+import type { OrderDto } from '../../api/contracts';
 import type { Order } from '../../data/seed';
 
 const statusVariant = (s: Order['status']) =>
   s === 'paid' ? 'paid' : s === 'cancelled' ? 'cancel' : 'stone';
 
+const mapOrder = (
+  value: OrderDto,
+  tables: ReturnType<typeof useCatalogStore.getState>['tables'],
+  employees: ReturnType<typeof useCatalogStore.getState>['employees'],
+  customers: ReturnType<typeof useCatalogStore.getState>['customers']
+): Order => ({
+  id: String(value.id),
+  orderNum: value.orderNumber,
+  tableId: value.tableId ? String(value.tableId) : null,
+  tableLabel: tables.find((table) => table.id === String(value.tableId))?.label ?? null,
+  status: value.status.toLowerCase() as Order['status'],
+  total: Number(value.totalAmount),
+  customerId: value.customerId ? String(value.customerId) : null,
+  customer: customers.find((customer) => customer.id === String(value.customerId))?.name,
+  employeeId: String(value.employeeId),
+  employeeName: employees.find((employee) => employee.id === String(value.employeeId))?.name,
+  sessionId: String(value.sessionId),
+  items: value.lines.map((line) => ({
+    productId: String(line.productId),
+    name: line.productName,
+    qty: Number(line.quantity),
+    price: Number(line.unitPrice),
+    taxRate: Number(line.taxRate ?? 0),
+    discount: Number(line.discountAmount),
+  })),
+  createdAt: value.createdAt,
+  paymentMethod: undefined,
+});
+
 export function OrdersListPage() {
   const navigate = useNavigate();
-  const { orders, deleteOrder } = useCatalogStore();
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const { tables, employees, customers } = useCatalogStore();
   const { loadOrder } = useCartStore();
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const debounced = useDebounce(query);
   const [selected, setSelected] = useState<Order | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!sessionId) {
+      setOrders([]);
+      return;
+    }
+    setLoading(true);
+    void api<PageResponse<OrderDto>>(`/api/orders?sessionId=${sessionId}&size=500`)
+      .then((page) => setOrders(page.content.map((order) => mapOrder(order, tables, employees, customers))))
+      .catch((cause) => toast.error(cause instanceof Error ? cause.message : 'Unable to load session orders.'))
+      .finally(() => setLoading(false));
+  }, [sessionId, tables, employees, customers]);
+
   const filtered = useMemo(
     () =>
-      orders.filter(
-        (o) => {
-          const matchText =
-            o.orderNum.toLowerCase().includes(debounced.toLowerCase()) ||
-            (o.tableLabel ?? '').toLowerCase().includes(debounced.toLowerCase()) ||
-            (o.customer ?? '').toLowerCase().includes(debounced.toLowerCase());
-          const matchDate = !dateFilter || o.createdAt.slice(0, 10) === dateFilter;
-          return matchText && matchDate;
-        }
-      ),
+      orders.filter((o) => {
+        const matchText =
+          o.orderNum.toLowerCase().includes(debounced.toLowerCase()) ||
+          (o.tableLabel ?? '').toLowerCase().includes(debounced.toLowerCase()) ||
+          (o.customer ?? '').toLowerCase().includes(debounced.toLowerCase());
+        const matchDate = !dateFilter || o.createdAt.slice(0, 10) === dateFilter;
+        return matchText && matchDate;
+      }),
     [orders, debounced, dateFilter]
   );
 
   const handleEditOrder = (order: Order) => {
     if (order.status !== 'draft') return;
-    // Load order items into cart and navigate to POS
     const cartItems = order.items.map((i) => ({
       id: i.productId ?? '',
       name: i.name,
       price: i.price,
       qty: i.qty,
+      taxRate: i.taxRate ?? 0,
     }));
     loadOrder(
       cartItems,
@@ -62,15 +107,20 @@ export function OrdersListPage() {
     navigate('/pos');
   };
 
-  const handleDelete = (id: string) => {
-    deleteOrder(id);
-    toast.info('Draft order deleted.');
-    setSelected(null);
+  const handleDelete = async (id: string) => {
+    try {
+      await api(`/api/orders/${id}`, { method: 'DELETE' });
+      setOrders((current) => current.filter((order) => order.id !== id));
+      toast.info('Draft order deleted.');
+      setSelected(null);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Unable to delete draft order.');
+    }
   };
 
   return (
     <div className="p-4 sm:p-6">
-      <PageHeader title="Order" accentWord="history" subtitle="Past & open tickets" />
+      <PageHeader title="Orders" accentWord="session" subtitle="Current POS session history" />
       <div className="flex flex-col sm:flex-row gap-3 mb-2">
         <div className="flex-1 max-w-sm">
           <Input label="Search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Customer name, Order # or table" />
@@ -79,10 +129,10 @@ export function OrdersListPage() {
           <Input label="Date" type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} />
         </div>
       </div>
-      <SectionLabel>{filtered.length} orders</SectionLabel>
+      <SectionLabel>{loading ? 'Loading orders...' : `${filtered.length} orders`}</SectionLabel>
 
-      {filtered.length === 0 ? (
-        <EmptyState title="No orders found" description="Open tickets will appear here." />
+      {!loading && filtered.length === 0 ? (
+        <EmptyState title="No orders found" description="Only orders from the active session appear here." />
       ) : (
         <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-left">
@@ -114,22 +164,24 @@ export function OrdersListPage() {
         </div>
       )}
 
-      <div className="sm:hidden flex flex-col">
-        {filtered.map((o) => (
-          <button key={o.id} onClick={() => setSelected(o)} className="border-b border-border py-4 text-left">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="font-display text-[18px] text-text">{o.orderNum}</div>
-                <div className="text-[16px] font-light text-text-muted mt-0.5">
-                  Table {o.tableLabel ?? '—'} · {o.customer ?? 'No customer'} · {o.items.length} items
+      {!loading && (
+        <div className="sm:hidden flex flex-col">
+          {filtered.map((o) => (
+            <button key={o.id} onClick={() => setSelected(o)} className="border-b border-border py-4 text-left">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-display text-[18px] text-text">{o.orderNum}</div>
+                  <div className="text-[16px] font-light text-text-muted mt-0.5">
+                    Table {o.tableLabel ?? '—'} · {o.customer ?? 'No customer'} · {o.items.length} items
+                  </div>
+                  <div className="mt-2"><Badge variant={statusVariant(o.status)}>{o.status}</Badge></div>
                 </div>
-                <div className="mt-2"><Badge variant={statusVariant(o.status)}>{o.status}</Badge></div>
+                <div className="font-display text-[20px] text-text">₹{o.total}</div>
               </div>
-              <div className="font-display text-[20px] text-text">₹{o.total}</div>
-            </div>
-          </button>
-        ))}
-      </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       <Drawer
         open={selected !== null}
@@ -182,7 +234,7 @@ export function OrdersListPage() {
         open={confirmDelete !== null}
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => {
-          if (confirmDelete) handleDelete(confirmDelete);
+          if (confirmDelete) void handleDelete(confirmDelete);
           setConfirmDelete(null);
         }}
         title="Delete draft order"

@@ -1,12 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, QrCode as QrIcon, Mail } from 'lucide-react';
+import { ArrowLeft, Check, Mail, Printer } from 'lucide-react';
 import { Button, Input, SectionLabel } from '../../components/ui';
 import { useCartStore, cartTotals } from '../../store/cartStore';
 import { useCatalogStore } from '../../store/catalogStore';
 import { ReceiptEmailModal } from './ReceiptEmailModal';
 import { toast } from '../../components/ui/Toast';
-import { api } from '../../api/client';
+import { api, downloadApiFile } from '../../api/client';
 import type { OrderDto } from '../../api/contracts';
 import { useSessionStore } from '../../store/sessionStore';
 
@@ -18,6 +18,10 @@ export function PaymentScreen() {
   const { paymentMethods, customers, refreshOrders, refreshTables } = useCatalogStore();
   const sessionId = useSessionStore((s) => s.sessionId);
   const totals = useMemo(() => cartTotals(items, coupon), [items, coupon]);
+  const enabledMethods = useMemo(
+    () => paymentMethods.filter((item) => item.enabled),
+    [paymentMethods]
+  );
   const [method, setMethod] = useState<Method>('cash');
   const [cash, setCash] = useState('');
   const [cardRef, setCardRef] = useState('');
@@ -28,6 +32,78 @@ export function PaymentScreen() {
   const [paidCustomerEmail, setPaidCustomerEmail] = useState('');
   const [emailOpen, setEmailOpen] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [draftId, setDraftId] = useState<string | null>(orderId);
+  const [upiQr, setUpiQr] = useState<string | null>(null);
+  const [preparingDraft, setPreparingDraft] = useState(false);
+
+  const availableTabs = useMemo(
+    () =>
+      enabledMethods
+        .map((item) => ({
+          id: item.type as Method,
+          label: item.type === 'upi' ? 'UPI QR' : item.name,
+        }))
+        .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index),
+    [enabledMethods]
+  );
+  const upiMethod = enabledMethods.find((item) => item.type === 'upi');
+
+  useEffect(() => {
+    if (availableTabs.length === 0) return;
+    if (!availableTabs.some((item) => item.id === method)) {
+      setMethod(availableTabs[0].id);
+    }
+  }, [availableTabs, method]);
+
+  const ensureDraft = async () => {
+    if (!sessionId) throw new Error('Open a POS session before accepting payment.');
+    if (draftId) {
+      return api<OrderDto>(`/api/orders/${draftId}`);
+    }
+    const draft = await api<OrderDto>(
+      `/api/orders?sessionId=${sessionId}${tableId ? `&tableId=${tableId}` : ''}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: customer ? Number(customer.id) : null,
+          lines: items.map((item) => ({ productId: Number(item.id), quantity: item.qty })),
+        }),
+      }
+    );
+    setDraftId(String(draft.id));
+    setOrder(String(draft.id), draft.orderNumber);
+    return draft;
+  };
+
+  useEffect(() => {
+    if (items.length === 0 || done) return;
+    setPreparingDraft(true);
+    void ensureDraft().catch(() => undefined).finally(() => setPreparingDraft(false));
+  }, []);
+
+  useEffect(() => {
+    if (!draftId) return;
+    const paymentMethod = enabledMethods.find((item) => item.type === method);
+    if (!paymentMethod) return;
+    void api('/api/customer-display/preview-payment', {
+      method: 'POST',
+      body: JSON.stringify({ orderId: Number(draftId), paymentMethodId: Number(paymentMethod.id) }),
+    }).catch(() => undefined);
+  }, [draftId, method, enabledMethods]);
+
+  useEffect(() => {
+    if (method !== 'upi' || !upiMethod?.upiId) {
+      setUpiQr(null);
+      return;
+    }
+    const params = new URLSearchParams({
+      upiId: upiMethod.upiId,
+      amount: String(totals.total),
+    });
+    void api<string>(`/api/payment-methods/upi/qr?${params.toString()}`)
+      .then(setUpiQr)
+      .catch(() => setUpiQr(null));
+  }, [method, totals.total, upiMethod?.upiId]);
 
   if (items.length === 0 && !done) {
     return (
@@ -42,36 +118,14 @@ export function PaymentScreen() {
   const change = cash ? Number(cash) - totals.total : 0;
 
   const finalize = async (pm: Method) => {
-    if (!sessionId) {
-      toast.error('Open a POS session before accepting payment.');
-      return;
-    }
-    const paymentMethod = paymentMethods.find((item) => item.type === pm && item.enabled);
+    const paymentMethod = enabledMethods.find((item) => item.type === pm);
     if (!paymentMethod) {
       toast.error(`${pm.toUpperCase()} is not enabled in payment methods.`);
       return;
     }
     setPaying(true);
     try {
-      let draft: OrderDto;
-      if (orderId) {
-        draft = await api<OrderDto>(`/api/orders/${orderId}`);
-      } else {
-        draft = await api<OrderDto>(
-          `/api/orders?sessionId=${sessionId}${tableId ? `&tableId=${tableId}` : ''}`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              customerId: customer ? Number(customer.id) : null,
-              lines: items.map((item) => ({
-                productId: Number(item.id),
-                quantity: item.qty,
-              })),
-            }),
-          }
-        );
-        setOrder(String(draft.id), draft.orderNumber);
-      }
+      let draft = await ensureDraft();
       if (coupon) {
         draft = await api<OrderDto>(`/api/orders/${draft.id}/discount`, {
           method: 'PUT',
@@ -89,9 +143,7 @@ export function PaymentScreen() {
       setPaidOrderId(String(paid.id));
       setOrderNum(paid.orderNumber);
       setPaidTotal(Number(paid.totalAmount));
-      setPaidCustomerEmail(
-        customer ? customers.find((item) => item.id === customer.id)?.email ?? '' : ''
-      );
+      setPaidCustomerEmail(customer ? customers.find((item) => item.id === customer.id)?.email ?? '' : '');
       await Promise.all([refreshOrders(), refreshTables()]);
       toast.success(`${paid.orderNumber} paid via ${pm}.`);
       clearCart();
@@ -110,10 +162,18 @@ export function PaymentScreen() {
         <div className="text-[14px] tracking-[0.28em] uppercase font-extralight text-text-muted mb-2">Payment complete</div>
         <div className="font-display font-light italic text-[clamp(48px,12vw,96px)] text-gold leading-none mb-6">{orderNum}</div>
         <div className="text-[17px] font-light text-text-muted mb-8">Thank you. The payment was recorded successfully.</div>
-        <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md">
+        <div className="flex flex-col sm:flex-row gap-3 w-full max-w-2xl">
           <Button fullWidth size="md" onClick={() => navigate('/pos')}>New order</Button>
           <Button fullWidth variant="ghost" size="md" onClick={() => setEmailOpen(true)}>
             <Mail size={14} /> Send receipt
+          </Button>
+          <Button
+            fullWidth
+            variant="ghost"
+            size="md"
+            onClick={() => paidOrderId && void downloadApiFile(`/api/orders/${paidOrderId}/receipt/print`, `receipt-${orderNum}.pdf`)}
+          >
+            <Printer size={14} /> Print receipt
           </Button>
           <Button fullWidth variant="ghost" size="md" onClick={() => navigate('/pos/history')}>View history</Button>
         </div>
@@ -129,12 +189,6 @@ export function PaymentScreen() {
     );
   }
 
-  const tabs: { id: Method; label: string }[] = [
-    { id: 'cash', label: 'Cash' },
-    { id: 'upi', label: 'UPI QR' },
-    { id: 'card', label: 'Card' },
-  ];
-
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -144,15 +198,28 @@ export function PaymentScreen() {
       <div className="text-center mb-8">
         <div className="text-[14px] tracking-[0.28em] uppercase font-extralight text-text-muted mb-2">Amount due</div>
         <div className="font-display font-light text-[clamp(56px,14vw,96px)] text-text leading-none">₹{totals.total}</div>
+        {preparingDraft && <div className="mt-3 text-[14px] text-text-faint">Preparing payment preview…</div>}
       </div>
       <SectionLabel>Method</SectionLabel>
-      <div className="grid grid-cols-3 gap-2 mb-6">
-        {tabs.map((t) => (
-          <button key={t.id} onClick={() => setMethod(t.id)} className={`py-3 text-[15px] tracking-[0.18em] uppercase font-light min-h-[44px] transition-colors ${method === t.id ? 'text-gold border border-[rgba(0,117,74,0.4)] bg-[rgba(0,117,74,0.05)]' : 'text-text-muted border border-border'}`}>{t.label}</button>
-        ))}
-      </div>
+      {availableTabs.length === 0 ? (
+        <div className="border border-border p-5 text-[16px] font-light text-text-muted">
+          No payment methods are enabled. Enable at least one payment method from admin settings before checkout.
+        </div>
+      ) : (
+        <div className={`grid gap-2 mb-6 ${availableTabs.length === 1 ? 'grid-cols-1' : availableTabs.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+          {availableTabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setMethod(tab.id)}
+              className={`py-3 text-[15px] tracking-[0.18em] uppercase font-light min-h-[44px] transition-colors ${method === tab.id ? 'text-gold border border-[rgba(0,117,74,0.4)] bg-[rgba(0,117,74,0.05)]' : 'text-text-muted border border-border'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {method === 'cash' && (
+      {availableTabs.length > 0 && method === 'cash' && (
         <div>
           <Input label="Cash received (₹)" type="number" value={cash} onChange={(e) => setCash(e.target.value)} placeholder="0" />
           {cash && change >= 0 && (
@@ -167,15 +234,20 @@ export function PaymentScreen() {
         </div>
       )}
 
-      {method === 'upi' && (
+      {availableTabs.length > 0 && method === 'upi' && (
         <div className="flex flex-col items-center">
-          <div className="w-48 h-48 border border-border flex items-center justify-center text-gold mb-4"><QrIcon size={120} strokeWidth={1} /></div>
-          <div className="text-[15px] tracking-[0.18em] uppercase font-extralight text-text-muted mb-6">Scan to pay ₹{totals.total}</div>
+          {upiQr ? (
+            <img src={upiQr} alt="UPI payment QR code" className="w-56 h-56 border border-border object-contain p-3 mb-4 bg-white" />
+          ) : (
+            <div className="w-56 h-56 border border-border flex items-center justify-center text-text-faint mb-4">UPI QR unavailable</div>
+          )}
+          <div className="text-[15px] tracking-[0.18em] uppercase font-extralight text-text-muted mb-2">Scan to pay ₹{totals.total}</div>
+          {upiMethod?.upiId && <div className="text-[15px] font-light text-text-faint mb-6">{upiMethod.upiId}</div>}
           <Button fullWidth size="lg" disabled={paying} onClick={() => void finalize('upi')}>{paying ? 'Processing...' : 'Confirm payment received'}</Button>
         </div>
       )}
 
-      {method === 'card' && (
+      {availableTabs.length > 0 && method === 'card' && (
         <div>
           <Input label="Reference number" value={cardRef} onChange={(e) => setCardRef(e.target.value)} placeholder="Optional" />
           <Button fullWidth size="lg" className="mt-8" disabled={paying} onClick={() => void finalize('card')}>{paying ? 'Processing...' : 'Confirm payment'}</Button>

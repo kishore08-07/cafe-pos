@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { BellRing, Menu, LogOut, Users, X } from 'lucide-react';
 import { ThemeToggle } from '../../components/ui/ThemeToggle';
+import { Button, Modal } from '../../components/ui';
 import { MobileNavSheet } from '../../components/shared/MobileNavSheet';
 import { EmployeeSwitchPopup } from './EmployeeSwitchPopup';
 import { useAuthStore } from '../../store/authStore';
@@ -10,10 +11,11 @@ import { useSessionStore } from '../../store/sessionStore';
 import { toast } from '../../components/ui/Toast';
 import { api } from '../../api/client';
 import type { KdsTicketDto } from '../../api/contracts';
+import { subscribeToTopic } from '../../api/stomp';
 
 const navItems = [
-  { to: '/pos', label: 'Orders' },
-  { to: '/pos/history', label: 'History' },
+  { to: '/pos', label: 'POS Order' },
+  { to: '/pos/history', label: 'Orders' },
   { to: '/pos/customers', label: 'Customers' },
   { to: '/pos/tables', label: 'Tables' },
 ];
@@ -36,13 +38,15 @@ export function POSLayout() {
   const navigate = useNavigate();
   const { user, clearSession } = useAuthStore();
   const tableLabel = useCartStore((s) => s.tableLabel);
-  const { isOpen } = useSessionStore();
+  const { isOpen, closeSession, lastClosedSummary, clearLastClosedSummary } = useSessionStore();
   const knownKitchenStages = useRef<Map<number, KdsTicketDto['stage']> | null>(null);
   const skipNextNotificationSave = useRef(false);
   const [pickupNotifications, setPickupNotifications] = useState<KdsTicketDto[]>([]);
   const [popupOrderIds, setPopupOrderIds] = useState<Set<number>>(new Set());
   const [unreadOrderIds, setUnreadOrderIds] = useState<Set<number>>(new Set());
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [closingSession, setClosingSession] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -73,47 +77,43 @@ export function POSLayout() {
   useEffect(() => {
     if (!user) return;
 
-    const checkKitchen = async () => {
-      try {
-        const tickets = await api<KdsTicketDto[]>('/api/kds/tickets');
-        const currentStages = new Map(tickets.map((ticket) => [ticket.orderId, ticket.stage]));
-        const previousStages = knownKitchenStages.current;
-
-        if (previousStages) {
-          const completed = tickets.filter(
-            (ticket) =>
-              String(ticket.employeeId) === user.id &&
-              ticket.stage === 'COMPLETED' &&
-              previousStages.get(ticket.orderId) !== 'COMPLETED'
-          );
-          if (completed.length > 0) {
-            setPickupNotifications((current) => {
-              const existing = new Set(current.map((ticket) => ticket.orderId));
-              return [...current, ...completed.filter((ticket) => !existing.has(ticket.orderId))];
-            });
-            setPopupOrderIds((current) => {
-              const next = new Set(current);
-              completed.forEach((ticket) => next.add(ticket.orderId));
-              return next;
-            });
-            setUnreadOrderIds((current) => {
-              const next = new Set(current);
-              completed.forEach((ticket) => next.add(ticket.orderId));
-              return next;
-            });
-          }
-        }
-
-        knownKitchenStages.current = currentStages;
-      } catch {
-        // Keep POS usable if the public kitchen feed is temporarily unavailable.
+    const handleTicket = (ticket: KdsTicketDto) => {
+      const previousStage = knownKitchenStages.current?.get(ticket.orderId);
+      if (
+        String(ticket.employeeId) === user.id &&
+        ticket.stage === 'COMPLETED' &&
+        previousStage !== 'COMPLETED'
+      ) {
+        setPickupNotifications((current) => {
+          const existing = new Set(current.map((item) => item.orderId));
+          return existing.has(ticket.orderId) ? current : [...current, ticket];
+        });
+        setPopupOrderIds((current) => new Set(current).add(ticket.orderId));
+        setUnreadOrderIds((current) => new Set(current).add(ticket.orderId));
       }
+      if (!knownKitchenStages.current) {
+        knownKitchenStages.current = new Map();
+      }
+      knownKitchenStages.current.set(ticket.orderId, ticket.stage);
     };
 
-    knownKitchenStages.current = null;
-    void checkKitchen();
-    const timer = window.setInterval(() => void checkKitchen(), 3000);
-    return () => window.clearInterval(timer);
+    knownKitchenStages.current = new Map();
+    void api<KdsTicketDto[]>('/api/kds/tickets')
+      .then((tickets) => {
+        knownKitchenStages.current = new Map(tickets.map((ticket) => [ticket.orderId, ticket.stage]));
+      })
+      .catch(() => undefined);
+
+    return subscribeToTopic({
+      destination: '/topic/kds',
+      onMessage: (body) => {
+        try {
+          handleTicket(JSON.parse(body) as KdsTicketDto);
+        } catch {
+          // Ignore malformed frames and keep POS usable.
+        }
+      },
+    });
   }, [user]);
 
   const handleLogout = () => {
@@ -122,7 +122,31 @@ export function POSLayout() {
     navigate('/login');
   };
 
-  if (!isOpen) {
+  const handleCloseSession = async () => {
+    setClosingSession(true);
+    try {
+      const summary = await closeSession();
+      useCartStore.setState({
+        orderId: null,
+        orderNumber: null,
+        tableId: null,
+        tableLabel: null,
+        customer: null,
+        coupon: null,
+        items: [],
+      });
+      setCloseDialogOpen(false);
+      if (summary) {
+        toast.success(`Session closed with ₹${Number(summary.expectedCash).toLocaleString('en-IN')} expected cash.`);
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Unable to close the session.');
+    } finally {
+      setClosingSession(false);
+    }
+  };
+
+  if (!isOpen && !lastClosedSummary) {
     return <Navigate to="/pos/session" replace />;
   }
 
@@ -223,6 +247,11 @@ export function POSLayout() {
               <Users size={18} />
             </button>
             <ThemeToggle />
+            <div className="hidden lg:block">
+              <Button variant="ghost" size="sm" onClick={() => setCloseDialogOpen(true)} disabled={!isOpen || closingSession}>
+                Close session
+              </Button>
+            </div>
             <div className="hidden sm:flex items-center gap-3 ml-1 pl-3 border-l border-border">
               <button onClick={handleLogout} className="text-text-muted hover:text-cancel p-2 min-h-[40px] min-w-[40px] flex items-center justify-center" aria-label="Sign out">
                 <LogOut size={18} />
@@ -276,8 +305,66 @@ export function POSLayout() {
         </div>
       )}
       <main className="flex-1">
-        <Outlet />
+        {isOpen ? <Outlet /> : <div className="p-6 text-center text-[17px] font-light text-text-muted">Session closed.</div>}
       </main>
+      <Modal
+        open={closeDialogOpen}
+        onClose={() => !closingSession && setCloseDialogOpen(false)}
+        title="Close session"
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setCloseDialogOpen(false)} disabled={closingSession}>Keep open</Button>
+            <Button variant="danger" size="sm" onClick={() => void handleCloseSession()} disabled={closingSession}>
+              {closingSession ? 'Closing...' : 'Close session'}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[16px] font-light text-text-muted">
+          This will close the active POS session and show the closing summary. Any remaining draft orders must be cleared first.
+        </p>
+      </Modal>
+      <Modal
+        open={lastClosedSummary !== null}
+        onClose={() => {
+          clearLastClosedSummary();
+          navigate('/pos/session');
+        }}
+        title="Session summary"
+        footer={
+          <Button
+            size="sm"
+            onClick={() => {
+              clearLastClosedSummary();
+              navigate('/pos/session');
+            }}
+          >
+            Back to session screen
+          </Button>
+        }
+      >
+        {lastClosedSummary && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="border border-border p-3">
+                <div className="text-[13px] uppercase tracking-[0.16em] text-text-faint">Orders paid</div>
+                <div className="mt-1 font-display text-[28px] text-text">{lastClosedSummary.totalOrders}</div>
+              </div>
+              <div className="border border-border p-3">
+                <div className="text-[13px] uppercase tracking-[0.16em] text-text-faint">Revenue</div>
+                <div className="mt-1 font-display text-[28px] text-text">₹{Number(lastClosedSummary.revenue).toLocaleString('en-IN')}</div>
+              </div>
+            </div>
+            <div className="border border-border p-4">
+              <div className="text-[13px] uppercase tracking-[0.16em] text-text-faint">Expected cash</div>
+              <div className="mt-1 font-display text-[34px] text-gold">₹{Number(lastClosedSummary.expectedCash).toLocaleString('en-IN')}</div>
+              <div className="mt-2 text-[15px] font-light text-text-muted">
+                Closed at {new Date(lastClosedSummary.session.closedAt ?? lastClosedSummary.session.openedAt).toLocaleString('en-IN')}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

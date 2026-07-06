@@ -1,26 +1,35 @@
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '../../components/shared/PageHeader';
 import { SectionLabel, Badge } from '../../components/ui';
 import { useCatalogStore } from '../../store/catalogStore';
+import { api } from '../../api/client';
+
+interface DashboardSummary {
+  totalOrders: number;
+  revenue: number;
+  averageOrderValue: number;
+}
 
 export function DashboardPage() {
   const { orders, products, customers } = useCatalogStore();
-  const today = new Date().toISOString().slice(0, 10);
-  const todays = orders.filter((o) => o.createdAt.slice(0, 10) === today);
-  const revenue = todays
-    .filter((o) => o.status === 'paid')
-    .reduce((s, o) => s + o.total, 0);
-  const tickets = todays.length;
-  const avg = tickets ? Math.round(revenue / tickets) : 0;
+  const [summary, setSummary] = useState<DashboardSummary>({ totalOrders: 0, revenue: 0, averageOrderValue: 0 });
 
-  const metrics = [
-    { label: "Today's Revenue", value: `₹${revenue.toLocaleString('en-IN')}`, accent: true },
-    { label: 'Tickets Today', value: tickets, accent: false },
-    { label: 'Avg. Ticket', value: `₹${avg.toLocaleString('en-IN')}`, accent: false },
-    { label: 'Active Products', value: products.filter((p) => p.available).length, accent: false },
-    { label: 'Customers', value: customers.length, accent: false },
-    { label: 'Open Drafts', value: orders.filter((o) => o.status === 'draft').length, accent: false },
-  ];
+  useEffect(() => {
+    void api<DashboardSummary>('/api/reports/summary?period=TODAY').then(setSummary).catch(() => undefined);
+  }, []);
+
+  const metrics = useMemo(
+    () => [
+      { label: "Today's Revenue", value: `₹${Number(summary.revenue).toLocaleString('en-IN')}`, accent: true },
+      { label: 'Tickets Today', value: summary.totalOrders, accent: false },
+      { label: 'Avg. Ticket', value: `₹${Number(summary.averageOrderValue).toLocaleString('en-IN')}`, accent: false },
+      { label: 'Active Products', value: products.filter((p) => p.available).length, accent: false },
+      { label: 'Customers', value: customers.length, accent: false },
+      { label: 'Open Drafts', value: orders.filter((o) => o.status === 'draft').length, accent: false },
+    ],
+    [summary, products, customers, orders]
+  );
 
   const quickLinks = [
     { to: '/admin/products', label: 'Manage products' },
@@ -39,19 +48,9 @@ export function DashboardPage() {
       <SectionLabel>Snapshot</SectionLabel>
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-px bg-border mb-6">
         {metrics.map((m) => (
-          <div
-            key={m.label}
-            className="p-6"
-            style={{ background: 'var(--surface)' }}
-          >
-            <div className="text-[14px] tracking-[0.22em] uppercase font-extralight text-text-muted mb-3">
-              {m.label}
-            </div>
-            <div
-              className={`font-display font-light text-[clamp(32px,5vw,48px)] leading-none ${
-                m.accent ? 'text-gold' : 'text-text'
-              }`}
-            >
+          <div key={m.label} className="p-6" style={{ background: 'var(--surface)' }}>
+            <div className="text-[14px] tracking-[0.22em] uppercase font-extralight text-text-muted mb-3">{m.label}</div>
+            <div className={`font-display font-light text-[clamp(32px,5vw,48px)] leading-none ${m.accent ? 'text-gold' : 'text-text'}`}>
               {m.value}
             </div>
           </div>
@@ -76,9 +75,7 @@ export function DashboardPage() {
                 <td className="py-4 pr-4 font-display text-[18px] text-text">{o.orderNum}</td>
                 <td className="py-4 pr-4 text-[17px] font-light text-text-muted">{o.tableLabel ?? '—'}</td>
                 <td className="py-4 pr-4">
-                  <Badge
-                    variant={o.status === 'paid' ? 'paid' : o.status === 'cancelled' ? 'cancel' : 'stone'}
-                  >
+                  <Badge variant={o.status === 'paid' ? 'paid' : o.status === 'cancelled' ? 'cancel' : 'stone'}>
                     {o.status}
                   </Badge>
                 </td>

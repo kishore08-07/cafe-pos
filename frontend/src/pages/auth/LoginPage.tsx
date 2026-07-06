@@ -10,7 +10,6 @@ import { api, type AuthResponse, ApiClientError } from '../../api/client';
 export function LoginPage() {
   const navigate = useNavigate();
   const setSession = useAuthStore((s) => s.setSession);
-  const { isOpen } = useSessionStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -26,8 +25,15 @@ export function LoginPage() {
         body: JSON.stringify({ email: email.trim(), password }),
       });
       setSession(auth);
+      let hasOpenSession = false;
+      try {
+        await useSessionStore.getState().hydrateSession();
+        hasOpenSession = useSessionStore.getState().isOpen;
+      } catch {
+        hasOpenSession = false;
+      }
       toast.success(`Welcome back, ${auth.name.split(' ')[0]}.`);
-      navigate(auth.role === 'ADMIN' ? '/admin/dashboard' : isOpen ? '/pos' : '/pos/session');
+      navigate(hasOpenSession ? '/pos' : '/pos/session');
     } catch (cause) {
       setError(cause instanceof ApiClientError ? cause.message : 'Unable to sign in.');
     } finally {
