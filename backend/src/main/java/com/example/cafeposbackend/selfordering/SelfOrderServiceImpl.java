@@ -8,6 +8,7 @@ import com.example.cafeposbackend.common.exception.BusinessRuleException;
 import com.example.cafeposbackend.common.exception.ResourceNotFoundException;
 import com.example.cafeposbackend.common.util.PDFUtil;
 import com.example.cafeposbackend.common.util.QRCodeUtil;
+import com.example.cafeposbackend.discount.CouponService;
 import com.example.cafeposbackend.discount.DiscountDtos.*;
 import com.example.cafeposbackend.discount.PromotionService;
 import com.example.cafeposbackend.floor.*;
@@ -42,6 +43,7 @@ public class SelfOrderServiceImpl implements SelfOrderService {
   private final PDFUtil pdfUtil;
   private final KdsService kdsService;
   private final PromotionService promotionService;
+  private final CouponService couponService;
   private final String publicBaseUrl;
 
   public SelfOrderServiceImpl(
@@ -57,6 +59,7 @@ public class SelfOrderServiceImpl implements SelfOrderService {
       PDFUtil pdfUtil,
       KdsService kdsService,
       PromotionService promotionService,
+      CouponService couponService,
       @Value("${app.public-base-url:http://localhost:5173}") String publicBaseUrl) {
     this.configRepository = configRepository;
     this.tableRepository = tableRepository;
@@ -70,6 +73,7 @@ public class SelfOrderServiceImpl implements SelfOrderService {
     this.pdfUtil = pdfUtil;
     this.kdsService = kdsService;
     this.promotionService = promotionService;
+    this.couponService = couponService;
     this.publicBaseUrl = publicBaseUrl;
   }
 
@@ -194,9 +198,18 @@ public class SelfOrderServiceImpl implements SelfOrderService {
             .map(DiscountResult::amount)
             .reduce(BigDecimal.ZERO, BigDecimal::add)
             .min(subtotal);
+    BigDecimal couponDiscount = BigDecimal.ZERO;
+    if (request.couponCode() != null && !request.couponCode().isBlank()) {
+      couponDiscount =
+          couponService
+              .validate(request.couponCode().trim().toUpperCase(), subtotal)
+              .amount()
+              .min(subtotal.subtract(promotionDiscount).max(BigDecimal.ZERO));
+    }
+    BigDecimal totalDiscount = promotionDiscount.add(couponDiscount).min(subtotal);
 
     if (subtotal.compareTo(BigDecimal.ZERO) > 0) {
-      BigDecimal netSubtotal = subtotal.subtract(promotionDiscount).max(BigDecimal.ZERO);
+      BigDecimal netSubtotal = subtotal.subtract(totalDiscount).max(BigDecimal.ZERO);
       tax = tax.multiply(netSubtotal).divide(subtotal, 2, RoundingMode.HALF_UP);
     } else {
       tax = BigDecimal.ZERO;
@@ -204,8 +217,8 @@ public class SelfOrderServiceImpl implements SelfOrderService {
 
     order.setSubtotal(subtotal);
     order.setTaxTotal(tax);
-    order.setDiscountTotal(promotionDiscount);
-    order.setTotalAmount(subtotal.add(tax).subtract(promotionDiscount).max(BigDecimal.ZERO));
+    order.setDiscountTotal(totalDiscount);
+    order.setTotalAmount(subtotal.add(tax).subtract(totalDiscount).max(BigDecimal.ZERO));
     order.setSentToKitchen(true);
     order = orderRepository.save(order);
     kdsService.publish(order.getId());

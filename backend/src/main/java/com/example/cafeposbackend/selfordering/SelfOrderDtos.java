@@ -24,7 +24,7 @@ public final class SelfOrderDtos {
 
   public record TableTokenResponse(Long tableId, String tableNumber, String token) {}
 
-  public record SelfOrderRequest(@NotEmpty List<@Valid OrderLineRequest> lines) {}
+  public record SelfOrderRequest(String couponCode, @NotEmpty List<@Valid OrderLineRequest> lines) {}
 
   public record SelfOrderResponse(
       Long orderId, String orderNumber, Long tableId, BigDecimal total, OrderStatus status) {}
