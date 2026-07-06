@@ -9,6 +9,7 @@ export interface ProductDto {
   name: string;
   categoryId: number;
   categoryName: string;
+  categoryColor: string;
   taxId: number | null;
   taxRate: number | null;
   price: number;
@@ -87,12 +88,20 @@ export interface SessionDto {
   status: 'OPEN' | 'CLOSED';
 }
 
+export interface SessionSummaryDto {
+  session: SessionDto;
+  totalOrders: number;
+  revenue: number;
+  expectedCash: number;
+}
+
 export interface OrderLineDto {
   id: number;
   productId: number;
   productName: string;
   quantity: number;
   unitPrice: number;
+  taxRate: number;
   discountAmount: number;
   lineTotal: number;
   kdsStatus: 'TO_COOK' | 'PREPARING' | 'COMPLETED';
