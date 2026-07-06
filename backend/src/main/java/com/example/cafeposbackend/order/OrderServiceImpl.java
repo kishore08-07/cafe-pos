@@ -240,9 +240,9 @@ public class OrderServiceImpl implements OrderService {
     if (paid.compareTo(order.getTotalAmount()) >= 0) {
       order.setStatus(OrderStatus.PAID);
       order = orderRepository.save(order);
-      displayService.pushCompletionState(order);
+      displayService.pushCompletionState(order, method);
     } else {
-      displayService.pushPaymentState(order);
+      displayService.pushPaymentState(order, method);
     }
     if (publishToKitchen) {
       kdsService.publish(orderId);
@@ -254,12 +254,10 @@ public class OrderServiceImpl implements OrderService {
   @Transactional(readOnly = true)
   public void sendReceipt(Long orderId, String email) {
     OrderResponse order = getById(orderId);
-    if (order.status() != OrderStatus.PAID) {
-      throw new BusinessRuleException("A receipt can only be emailed for a paid order");
-    }
+    String subjectPrefix = order.status() == OrderStatus.PAID ? "Receipt " : "Order Summary ";
     emailUtil.sendReceipt(
         email.trim().toLowerCase(),
-        "Receipt " + order.orderNumber() + " - Cafe Etoile",
+        subjectPrefix + order.orderNumber() + " - Cafe Etoile",
         receiptText(order),
         receiptPdf(order),
         "receipt-" + order.orderNumber() + ".pdf");
@@ -410,6 +408,9 @@ public class OrderServiceImpl implements OrderService {
                         line.getProduct().getName(),
                         line.getQuantity(),
                         line.getUnitPrice(),
+                        line.getProduct().getTax() == null
+                            ? BigDecimal.ZERO
+                            : line.getProduct().getTax().getRatePercent(),
                         line.getDiscountAmount(),
                         line.getLineTotal(),
                         line.getKdsItemStatus()))

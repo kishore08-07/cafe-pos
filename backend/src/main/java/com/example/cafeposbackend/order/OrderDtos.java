@@ -40,6 +40,7 @@ public final class OrderDtos {
       String productName,
       BigDecimal quantity,
       BigDecimal unitPrice,
+      BigDecimal taxRate,
       BigDecimal discountAmount,
       BigDecimal lineTotal,
       KdsItemStatus kdsStatus) {}
