@@ -24,6 +24,7 @@ public final class ProductDtos {
       String name,
       Long categoryId,
       String categoryName,
+      String categoryColor,
       Long taxId,
       BigDecimal taxRate,
       BigDecimal price,

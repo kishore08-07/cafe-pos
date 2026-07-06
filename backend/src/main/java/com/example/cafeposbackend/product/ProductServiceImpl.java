@@ -134,6 +134,7 @@ public class ProductServiceImpl implements ProductService {
         product.getName(),
         product.getCategory().getId(),
         product.getCategory().getName(),
+        product.getCategory().getColorHex(),
         tax == null ? null : tax.getId(),
         tax == null ? null : tax.getRatePercent(),
         product.getPrice(),
