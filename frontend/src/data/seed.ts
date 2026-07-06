@@ -76,7 +76,7 @@ export interface Order {
   employeeId?: string;
   employeeName?: string;
   sessionId?: string;
-  items: { productId?: string; name: string; qty: number; price: number; discount?: number }[];
+  items: { productId?: string; name: string; qty: number; price: number; taxRate?: number; discount?: number }[];
   createdAt: string;
   paymentMethod?: 'cash' | 'card' | 'upi';
 }
