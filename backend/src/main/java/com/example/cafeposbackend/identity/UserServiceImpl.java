@@ -1,5 +1,6 @@
 package com.example.cafeposbackend.identity;
 
+import com.example.cafeposbackend.common.enums.Role;
 import com.example.cafeposbackend.common.exception.BusinessRuleException;
 import com.example.cafeposbackend.common.exception.ResourceNotFoundException;
 import com.example.cafeposbackend.identity.UserDtos.*;
@@ -47,6 +48,7 @@ public class UserServiceImpl implements UserService {
             existing -> {
               throw new BusinessRuleException("Email is already registered");
             });
+    guardLastActiveAdmin(user, request.role(), request.active());
     user.setName(request.name().trim());
     user.setEmail(email);
     user.setRole(request.role());
@@ -64,13 +66,20 @@ public class UserServiceImpl implements UserService {
   @Override
   public UserResponse archive(Long id) {
     AdminUser user = find(id);
+    if (user.isActive()) {
+      guardLastActiveAdmin(user, user.getRole(), false);
+    }
     user.setActive(!user.isActive());
     return map(repository.save(user));
   }
 
   @Override
   public void delete(Long id) {
-    repository.delete(find(id));
+    AdminUser user = find(id);
+    if (user.isActive()) {
+      guardLastActiveAdmin(user, user.getRole(), false);
+    }
+    repository.delete(user);
   }
 
   private AdminUser find(Long id) {
@@ -80,5 +89,19 @@ public class UserServiceImpl implements UserService {
   private UserResponse map(AdminUser user) {
     return new UserResponse(
         user.getId(), user.getName(), user.getEmail(), user.getRole(), user.isActive());
+  }
+
+  private void guardLastActiveAdmin(AdminUser user, Role nextRole, boolean nextActive) {
+    boolean remainsActiveAdmin = nextActive && nextRole == Role.ADMIN;
+    if (user.getRole() != Role.ADMIN || !user.isActive() || remainsActiveAdmin) {
+      return;
+    }
+    long activeAdmins =
+        repository.findByActiveTrue().stream()
+            .filter(value -> value.getRole() == Role.ADMIN)
+            .count();
+    if (activeAdmins <= 1) {
+      throw new BusinessRuleException("At least one active admin must remain in the system");
+    }
   }
 }
